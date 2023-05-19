@@ -26,12 +26,12 @@ def ForecastTraffyFlood():
     
     @task
     def get_rain():
-        df = pd.read_csv('/opt/airflow/dags/data/base_rain_amount.csv')
+        df = pd.read_csv('/opt/airflow/dags/data/clean_rain_amount.csv')
         return df
     
     @task
     def get_sea():
-        df = pd.read_csv('/opt/airflow/dags/data/base_sea_level.csv')
+        df = pd.read_csv('/opt/airflow/dags/data/clean_sea_level.csv')
         return df
     
     @task
@@ -46,26 +46,48 @@ def ForecastTraffyFlood():
         
     @task
     def clean_data(data_df):
-        data_df['timestamp'] = pd.to_datetime(data_df['timestamp']).dt.date
-        data_df['report'] = 1
-        group_df = data_df.groupby('district')
-        district = list()
-        for key,value in group_df:
-            ser = value['timestamp'].value_counts()
-            district.append({'date':ser.index,key:ser.values})
-        st_date = date(2019, 9, 19)
-        ed_date = date(2023, 4, 21)
-        all_day = {'date':[]}
-        for n in range(int((ed_date - st_date).days)):
-            all_day['date'].append((st_date + timedelta(n)).strftime("%Y-%m-%d"))
-            all_day = pd.DataFrame(all_day)
-            all_day['date'] = pd.to_datetime(all_day['date']).dt.date
-        for d in district:
-            tmp = pd.DataFrame(d)
-            all_day = all_day.merge(tmp,how='left',on='date')
-        all_day.fillna(0,inplace=True)
-        all_day.columns = all_day.columns.str.replace('_.*','',regex=True)
-        return all_day
+        # data_df['date'] = pd.to_datetime(data_df['date']).dt.date
+        # data_df['report'] = 1
+        # group_df = data_df.groupby('district')
+        # district = list()
+        # for key,value in group_df:
+        #     ser = value['date'].value_counts()
+        #     district.append({'date':ser.index,key:ser.values})
+        # st_date = date(2019, 9, 19)
+        # ed_date = date(2023, 4, 21)
+        # all_day = {'date':[]}
+        # for n in range(int((ed_date - st_date).days)):
+        #     all_day['date'].append((st_date + timedelta(n)).strftime("%Y-%m-%d"))
+        #     all_day = pd.DataFrame(all_day)
+        #     all_day['date'] = pd.to_datetime(all_day['date']).dt.date
+        # for d in district:
+        #     tmp = pd.DataFrame(d)
+        #     all_day = all_day.merge(tmp,how='left',on='date')
+        # all_day.fillna(0,inplace=True)
+        # all_day.columns = all_day.columns.str.replace('_.*','',regex=True)
+        return data_df
+
+    @task
+    def merge_df(report,rain,sea):
+        temp_report = report[['date', 'บางนา']].copy()
+        temp_rain = rain[['date', 'บางนา']].copy()
+        temp_report['date'] = pd.to_datetime(report['date'])
+        temp_rain['date'] = pd.to_datetime(rain['date'])
+        sea = sea.rename(columns={'y':'sea_level'})
+        temp_report.rename(columns={'date':'ds','บางนา':'y'},inplace=True)
+        temp_rain.rename(columns={'date':'ds','บางนา':'rain_amount'},inplace=True)
+        temp_report = temp_report.set_index('ds')
+        temp_rain = temp_rain.set_index('ds')
+        merged_df = pd.concat([temp_report, temp_rain \
+                    , sea.set_index('ds')], axis=1, join='inner').reset_index()
+        print(temp_report,'aaaaaaa')
+        print(merge_df)
+        return merged_df
+    
+    @task 
+    def a(s):
+        print(s)
+        return 0
 
     @task
     def forecast(clean_report_df,clean_rain_df,f_rain_df,f_sea_df,clean_sea_df):
@@ -80,15 +102,23 @@ def ForecastTraffyFlood():
             temp_report = clean_report_df[['date', f'{district}']].copy()
             temp_rain_amount= clean_rain_df[['date', f'{district}']].copy()
 
-            temp_report['date'] = pd.to_datetime(clean_report_df['date'])
-            temp_rain_amount['date'] = pd.to_datetime(clean_rain_df['date'])
+            # temp_report['date'] = pd.to_datetime(temp_report['date'])
+            # temp_rain_amount['date'] = pd.to_datetime(temp_rain_amount['date'])
 
             temp_report.rename(columns={'date':'ds',f'{district}':'y'},inplace=True)
             temp_rain_amount.rename(columns={'date':'ds',f'{district}':'rain_amount'},inplace=True)
-
+            print("eeeeeeeeeeeeeeeeeeeeeeeee")
+            print(temp_report.head())
+            print(temp_rain_amount.head())
+            print(clean_sea_df.head())
             merged_df = pd.concat([temp_report.set_index('ds'), temp_rain_amount.set_index('ds') \
                                    , clean_sea_df.set_index('ds')], axis=1, join='inner').reset_index()
-
+            print("wwwwwwwwwwwwwwwwwwwwwwww")
+            print(temp_report.set_index('ds'))
+            print(temp_rain_amount.head())
+            print(clean_sea_df.head())
+            print("kkkkkkkkkkkkkkkkkkkkkkkk")
+            print(merged_df)
             model_report = Prophet()
             model_report.add_regressor('sea_level')
             model_report.add_regressor('rain_amount')
@@ -112,6 +142,8 @@ def ForecastTraffyFlood():
     clean_sea_df = get_sea()
     f_rain_df = get_f_rain()
     f_sea_df = get_f_sea()
+    mm = merge_df(clean_df,clean_rain_df,clean_sea_df)
+    a(mm)
     forecast(clean_df,clean_rain_df,f_rain_df,f_sea_df,clean_sea_df)
 
 dag = ForecastTraffyFlood()

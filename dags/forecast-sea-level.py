@@ -10,8 +10,8 @@ from pmdarima import auto_arima
 from airflow.decorators import dag, task
 
 @dag(
-    dag_id="forecase-sea-level",
-    schedule_interval="0 0 * * *",
+    dag_id="forecast-sea-level",
+    schedule_interval=None,
     start_date=pendulum.datetime(2023, 5, 16, tz='Asia/Bangkok'),
     catchup=False,
     dagrun_timeout=datetime.timedelta(minutes=360),
@@ -51,9 +51,11 @@ def ForecastSeaLevel():
         
     @task
     def save_data(forecast_df):
-        forecast_df.to_csv(f'/opt/airflow/dags/data/output/sea_level_output.csv'\
+        try:
+            forecast_df.to_csv(f'/opt/airflow/dags/data/output/sea_level_output.csv'\
                                 ,index=False,header=True,encoding = 'utf-8-sig')
-        return 0
+            return 0
+        except: return 1
 
     data_df = get_data()
     clean_df = clean_data(data_df)

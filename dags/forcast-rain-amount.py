@@ -11,8 +11,8 @@ from airflow.decorators import dag, task
 
 
 @dag(
-    dag_id="forecast-rain_amount",
-    schedule_interval="0 0 * * *",
+    dag_id="forecast-rain-amount",
+    schedule_interval=None,
     start_date=pendulum.datetime(2023, 5, 16, tz='Asia/Bangkok'),
     catchup=False,
     dagrun_timeout=datetime.timedelta(minutes=360),

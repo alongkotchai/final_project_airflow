@@ -5,7 +5,8 @@ import pandas as pd
 import time
 from datetime import date, timedelta
 from bs4 import BeautifulSoup
-from airflow.decorators import dag, task
+from airflow.decorators import dag, task,task_group
+from airflow.operators.dagrun_operator import TriggerDagRunOperator
 
 def daterange(start_date, end_date):
     for n in range(int((end_date - start_date).days)):
@@ -17,7 +18,7 @@ def request_data(date):
     'datePick': date,
     'StationTime':'23:55',
     'account':'8'}
-  data = requests.post(url, data=form_data, timeout=60)
+  data = requests.post(url, data=form_data, timeout=360)
   soup1 = BeautifulSoup(data.text, "lxml")
   data = soup1.select('tr')
   sdict = {}
@@ -45,20 +46,23 @@ def ProcessSeaLevel():
         except: 
             return None
 
-    @task
+    @task(multiple_outputs=True)
     def get_last_date(base_df):
         try:
             last_date = base_df['date'].values[-1:][0]
         except: 
             last_date = '2014-12-31'
         last_date = [int(x) for x in last_date.split('-')]
-        return last_date
+        return {'last_date':last_date,'base_df':base_df}
 
-    @task
-    def get_new_data(last_date):
+    @task(multiple_outputs=True)
+    def get_new_data(ar):
+        last_date = ar['last_date']
+        base_df = ar['base_df']
 
         rain_data = request_data('14/05/2023')
-        rain_data.pop('อำเภอเมืองสมุทรปราการ')
+        if 'อำเภอเมืองสมุทรปราการ' in rain_data:
+            rain_data.pop('อำเภอเมืองสมุทรปราการ')
         data_dict = {'date':[],}
         for sta in rain_data:
             data_dict[sta] = []
@@ -87,20 +91,24 @@ def ProcessSeaLevel():
                 else:
                     data_dict[st].append(None)
 
-        return pd.DataFrame.from_dict(data_dict)
+        return {'new_df':pd.DataFrame.from_dict(data_dict),'base_df':base_df}
         
 
     @task
-    def merge_data(base_df,new_df):
+    def merge_data(ar):
+        new_df = ar['new_df']
+        base_df = ar['base_df']
         try:
             base_df = pd.concat([base_df,new_df])
             base_df.to_csv('/opt/airflow/dags/data/base_rain_amount.csv',index=False)
             return 0
         except: return 1
 
-    base_df = get_base_data()
-    last_date = get_last_date(base_df)
-    new_df = get_new_data(last_date)
-    merge_data(base_df,new_df)
+    trigger_dependent_dag = TriggerDagRunOperator(
+        task_id="trigger_rain_forecast",
+        trigger_dag_id="forecast-rain-amount",
+        wait_for_completion=True,
+    )
+    merge_data(get_new_data(get_last_date(get_base_data()))) >> trigger_dependent_dag
 
 dag = ProcessSeaLevel()

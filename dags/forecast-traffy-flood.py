@@ -7,12 +7,14 @@ import pickle
 from prophet import Prophet
 from pmdarima import auto_arima
 from datetime import date, timedelta
-
+from airflow.sensors.external_task import ExternalTaskSensor
+from airflow.models.baseoperator import chain
+import time
 from airflow.decorators import dag, task
 
 @dag(
     dag_id="forecast-traffy-flood",
-    schedule_interval="0 0 * * *",
+    schedule_interval='0 1 * * *',
     start_date=pendulum.datetime(2023, 5, 16, tz='Asia/Bangkok'),
     catchup=False,
     dagrun_timeout=datetime.timedelta(minutes=360),
@@ -20,32 +22,40 @@ from airflow.decorators import dag, task
 def ForecastTraffyFlood():
 
     @task
-    def get_data():
+    def get_data(**kwargs):
+        ti = kwargs["ti"]
         df = pd.read_csv('/opt/airflow/dags/data/report.csv')
-        return df
+        ti.xcom_push("base_data_df", df)
     
     @task
-    def get_rain():
+    def get_rain(**kwargs):
+        ti = kwargs["ti"]
         df = pd.read_csv('/opt/airflow/dags/data/clean_rain_amount.csv')
-        return df
+        ti.xcom_push("clean_rain_df", df)
     
     @task
-    def get_sea():
+    def get_sea(**kwargs):
+        ti = kwargs["ti"]
         df = pd.read_csv('/opt/airflow/dags/data/clean_sea_level.csv')
-        return df
+        ti.xcom_push("clean_sea_df", df)
     
     @task
-    def get_f_rain():
+    def get_f_rain(**kwargs):
+        ti = kwargs["ti"]
         df = pd.read_csv('/opt/airflow/dags/data/output/rain_amount_output_all.csv')
-        return df
+        ti.xcom_push("f_rain_df", df)
     
     @task
-    def get_f_sea():
+    def get_f_sea(**kwargs):
+        ti = kwargs["ti"]
         df = pd.read_csv('/opt/airflow/dags/data/output/sea_level_output.csv')
-        return df
+        ti.xcom_push("f_sea_df", df)
         
     @task
-    def clean_data(data_df):
+    def clean_data(**kwargs):
+        ti = kwargs["ti"]
+        df = ti.xcom_pull(task_ids="get_data", key="base_data_df")
+        ti.xcom_push("clean_data_df", df)
         # data_df['date'] = pd.to_datetime(data_df['date']).dt.date
         # data_df['report'] = 1
         # group_df = data_df.groupby('district')
@@ -65,32 +75,16 @@ def ForecastTraffyFlood():
         #     all_day = all_day.merge(tmp,how='left',on='date')
         # all_day.fillna(0,inplace=True)
         # all_day.columns = all_day.columns.str.replace('_.*','',regex=True)
-        return data_df
+        #return data_df
 
     @task
-    def merge_df(report,rain,sea):
-        temp_report = report[['date', 'บางนา']].copy()
-        temp_rain = rain[['date', 'บางนา']].copy()
-        temp_report['date'] = pd.to_datetime(report['date'])
-        temp_rain['date'] = pd.to_datetime(rain['date'])
-        sea = sea.rename(columns={'y':'sea_level'})
-        temp_report.rename(columns={'date':'ds','บางนา':'y'},inplace=True)
-        temp_rain.rename(columns={'date':'ds','บางนา':'rain_amount'},inplace=True)
-        temp_report = temp_report.set_index('ds')
-        temp_rain = temp_rain.set_index('ds')
-        merged_df = pd.concat([temp_report, temp_rain \
-                    , sea.set_index('ds')], axis=1, join='inner').reset_index()
-        print(temp_report,'aaaaaaa')
-        print(merge_df)
-        return merged_df
-    
-    @task 
-    def a(s):
-        print(s)
-        return 0
-
-    @task
-    def forecast(clean_report_df,clean_rain_df,f_rain_df,f_sea_df,clean_sea_df):
+    def forecast(**kwargs):
+        ti = kwargs["ti"]
+        clean_report_df = ti.xcom_pull(task_ids="clean_data", key="clean_data_df")
+        clean_rain_df = ti.xcom_pull(task_ids="get_rain", key="clean_rain_df")
+        clean_sea_df = ti.xcom_pull(task_ids="get_sea", key="clean_sea_df")
+        f_rain_df = ti.xcom_pull(task_ids="get_f_rain", key="f_rain_df")
+        f_sea_df = ti.xcom_pull(task_ids="get_f_sea", key="f_sea_df")
         array1 = np.array(f_sea_df['yhat'])
         array2 = { d:np.array(f_rain_df[d]) for d in clean_rain_df.columns[1::]}
         districts = clean_rain_df.columns[1::]
@@ -98,27 +92,14 @@ def ForecastTraffyFlood():
         for district in districts:
             tmp = clean_rain_df[['date',district]]
             train = tmp.rename(columns={'date':'ds',district:'y'})
-
             temp_report = clean_report_df[['date', f'{district}']].copy()
             temp_rain_amount= clean_rain_df[['date', f'{district}']].copy()
-
             # temp_report['date'] = pd.to_datetime(temp_report['date'])
             # temp_rain_amount['date'] = pd.to_datetime(temp_rain_amount['date'])
-
             temp_report.rename(columns={'date':'ds',f'{district}':'y'},inplace=True)
             temp_rain_amount.rename(columns={'date':'ds',f'{district}':'rain_amount'},inplace=True)
-            print("eeeeeeeeeeeeeeeeeeeeeeeee")
-            print(temp_report.head())
-            print(temp_rain_amount.head())
-            print(clean_sea_df.head())
             merged_df = pd.concat([temp_report.set_index('ds'), temp_rain_amount.set_index('ds') \
                                    , clean_sea_df.set_index('ds')], axis=1, join='inner').reset_index()
-            print("wwwwwwwwwwwwwwwwwwwwwwww")
-            print(temp_report.set_index('ds'))
-            print(temp_rain_amount.head())
-            print(clean_sea_df.head())
-            print("kkkkkkkkkkkkkkkkkkkkkkkk")
-            print(merged_df)
             model_report = Prophet()
             model_report.add_regressor('sea_level')
             model_report.add_regressor('rain_amount')
@@ -136,14 +117,27 @@ def ForecastTraffyFlood():
             with open(f'/opt/airflow/dags/data/model/report_{district}.pkl','wb') as f:
                     pickle.dump(model_report, f) 
 
-    data_df = get_data()
-    clean_df = clean_data(data_df)
-    clean_rain_df = get_rain()
-    clean_sea_df = get_sea()
-    f_rain_df = get_f_rain()
-    f_sea_df = get_f_sea()
-    mm = merge_df(clean_df,clean_rain_df,clean_sea_df)
-    a(mm)
-    forecast(clean_df,clean_rain_df,f_rain_df,f_sea_df,clean_sea_df)
+    wait_for_sea_level_forecast = ExternalTaskSensor(
+        task_id="wait_sea_level_forecast",
+        external_dag_id="process-sea-level",
+        external_task_id="trigger_sea_forecast",
+        allowed_states=["success"],
+        failed_states=["failed", "skipped"],
+        execution_delta= timedelta(hours=1),
+        poke_interval = 10
+    )
+
+    wait_for_rain_amount_forecast = ExternalTaskSensor(
+        task_id="wait_rain_amount_forecast",
+        external_dag_id="process-rain-amount",
+        external_task_id="trigger_rain_forecast",
+        allowed_states=["success"],
+        failed_states=["failed", "skipped"],
+        execution_delta= timedelta(hours=1),
+        poke_interval = 10
+    )
+
+    chain([ wait_for_rain_amount_forecast, wait_for_sea_level_forecast],get_data(),clean_data(), \
+                                [get_rain() , get_sea(), get_f_rain(), get_f_sea()],forecast())
 
 dag = ForecastTraffyFlood()
